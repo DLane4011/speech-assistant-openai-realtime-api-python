@@ -65,7 +65,7 @@ async def language_selection(request: Request):
     return HTMLResponse(str(vr), media_type="application/xml")
 
 # ──────────────────────────────────────────────
-# 3️⃣  Media stream
+# 3️⃣  Media stream WebSocket handler
 # ──────────────────────────────────────────────
 @app.websocket("/media-stream")
 async def media_stream(ws: WebSocket):
@@ -80,8 +80,9 @@ async def media_stream(ws: WebSocket):
                 "OpenAI-Beta": "realtime=v1",
             },
         ) as ai_ws:
+            # Initialize session with language-specific instructions
             await initialize_session(ai_ws, lang)
-            # Wait to greet until we get caller audio
+
             greeted = False
             stream_sid = None
             rate_state = None
@@ -125,6 +126,7 @@ async def media_stream(ws: WebSocket):
                     pass
 
             await asyncio.gather(twilio_to_openai(), openai_to_twilio())
+
     except Exception as e:
         print("CRITICAL:", e)
 
@@ -132,13 +134,22 @@ async def media_stream(ws: WebSocket):
 # 4️⃣  OpenAI helpers
 # ──────────────────────────────────────────────
 async def initialize_session(ai_ws, lang):
-    prompt = (
+    prompt_en = (
         "You are a calm, neutral AI for an anonymous employee tip line. "
         "Ask one question at a time and wait for the caller to finish before speaking again. "
         "Do not speak unless the user has clearly responded. "
         "Gather who, what, when, where, and any evidence. "
-        f"Respond only in {'Spanish' if lang == 'es' else 'English'}."
+        "Respond only in English."
     )
+    prompt_es = (
+        "Eres una IA calmada y neutral para una línea anónima de denuncias de empleados. "
+        "Haz una pregunta a la vez y espera a que el interlocutor termine antes de hablar de nuevo. "
+        "No hables a menos que el usuario haya respondido claramente. "
+        "Reúne quién, qué, cuándo, dónde y cualquier evidencia. "
+        "Responde únicamente en español."
+    )
+    prompt = prompt_es if lang == "es" else prompt_en
+
     await ai_ws.send(json.dumps({
         "type": "session.update",
         "session": {
@@ -152,12 +163,14 @@ async def send_initial_greeting(ai_ws, lang):
         "en": "Thank you for calling the anonymous tip line. How can I assist you today?",
         "es": "Gracias por llamar a la línea de denuncias anónimas. ¿Cómo puedo ayudarle hoy?",
     }
+    greeting_text = greetings.get(lang, greetings["en"])
+
     await ai_ws.send(json.dumps({
         "type": "conversation.item.create",
         "item": {
             "type": "message",
             "role": "assistant",
-            "content": [{"type": "output_text", "text": greetings[lang]}],
+            "content": [{"type": "output_text", "text": greeting_text}],
         },
     }))
     await ai_ws.send(json.dumps({"type": "response.create"}))
