@@ -57,14 +57,12 @@ async def handle_incoming_call(_: Request):
     )
     gather.say(
         "Thank you for contacting the Tip Line. For English, stay on the line.",
-        voice="Polly.Matthew",
-        language="en-US",
+        voice="Polly.Matthew"
     )
-    gather.pause(length=0.4)
+    gather.pause(length=1)
     gather.say(
         "Para español, presione el uno.",
-        voice="Polly.Lupe",
-        language="es-US",
+        voice="Polly.Lupe"
     )
     vr.redirect("/language-selection")
     return HTMLResponse(str(vr), media_type="application/xml")
