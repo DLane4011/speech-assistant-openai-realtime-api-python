@@ -61,7 +61,6 @@ async def language_selection(request: Request):
     digits = parse_qs(body).get("Digits", [""])[0]
     lang = "es" if digits.strip() == "1" else "en"
     
-    # Get the public server host from proxy headers (essential for Railway/ngrok)
     host = request.headers.get("x-forwarded-host", request.url.hostname)
     
     ws_url = f"wss://{host}/media-stream?lang={lang}"
@@ -89,16 +88,12 @@ async def handle_media_stream(websocket: WebSocket):
         },
     ) as openai_ws:
         
-        # 1. Configure the OpenAI session
         await initialize_session(openai_ws, lang)
-        
-        # 2. Tell the AI to speak its first line
         await send_initial_greeting(openai_ws, lang)
 
         stream_sid = None
         
         async def receive_from_twilio():
-            """Receive audio from Twilio and forward it to OpenAI."""
             nonlocal stream_sid
             try:
                 async for message in websocket.iter_text():
@@ -119,13 +114,11 @@ async def handle_media_stream(websocket: WebSocket):
                 if openai_ws.open: await openai_ws.close()
 
         async def send_to_twilio():
-            """Receive audio from OpenAI and forward it to Twilio."""
             nonlocal stream_sid
             try:
                 async for oa_raw in openai_ws:
                     oa = json.loads(oa_raw)
                     if oa.get("type") == "response.audio.delta" and "delta" in oa:
-                        # The 'delta' is already the base64 string Twilio needs
                         payload = oa["delta"]
                         await websocket.send_json({
                             "event": "media",
@@ -142,7 +135,6 @@ async def handle_media_stream(websocket: WebSocket):
 
 # --- Helper Functions for OpenAI ---
 
-# ✨ FIX IS HERE: Re-instated detailed session parameters from your original code. ✨
 async def initialize_session(openai_ws, lang: str):
     """Sends the initial configuration and system prompt to OpenAI."""
     system_prompt = (
@@ -152,17 +144,15 @@ async def initialize_session(openai_ws, lang: str):
         f"You must conduct the entire conversation in {'Spanish' if lang == 'es' else 'English'}."
     )
     
-    # The OpenAI Realtime API needs to know the audio format it's receiving from Twilio
-    # and the format it should send back. This is a critical step.
     session_config = {
         "type": "session.create",
         "audio_format": {
             "input_format": {
-                "encoding": "mulaw",  # This is the format Twilio sends (μ-law)
+                "encoding": "mulaw",
                 "sample_rate": 8000
             },
             "output_format": {
-                "encoding": "mulaw", # Send back the same format
+                "encoding": "mulaw",
                 "sample_rate": 8000
             }
         },
@@ -199,27 +189,6 @@ async def send_initial_greeting(openai_ws, lang: str):
 # This part allows the app to run locally for testing
 if __name__ == "__main__":
     import uvicorn
-    # When running locally, it will use port 5050 if you have it in your .env
-    # otherwise it defaults to 8000.
     local_port = int(os.getenv("PORT", 5050))
     print(f"Starting server locally on port {local_port}")
     uvicorn.run(app, host="0.0.0.0", port=local_port)
-Use code with caution.
-Python
-Summary of the Fix
-Restored initialize_session Details: The main change is in the initialize_session function. I've put back the detailed configuration that tells OpenAI exactly what kind of audio to expect from Twilio and what kind to send back.
-encoding: "mulaw": This is the specific audio codec that phone systems and Twilio use. It's also known as G.711 μ-law.
-sample_rate: 8000: This is the standard sample rate for telephone audio.
-Why this works: Without this information, the OpenAI API might be sending back audio in a different format (like high-fidelity PCM) that Twilio's media stream can't understand, resulting in the static you hear. By explicitly defining the format, we ensure both systems are speaking the same audio language.
-Robust Port for Railway: I changed the default port in the PORT = int(os.getenv("PORT", 8000)) line to 8000. Railway and many other hosting platforms automatically set a PORT environment variable, and it's often 8000. This makes the code slightly more robust for deployment. For local testing, I also updated the if __name__ == "__main__" block to use a different default port (5050) to avoid confusion.
-Next Steps
-Replace Your Code: Copy the entire new code block and overwrite your existing file on Railway.
-Redeploy: Let Railway automatically redeploy your application with the new code.
-Check Logs: Keep an eye on your Railway logs. You should see the Initializing OpenAI session with config... message.
-Test the Call: Call your Twilio number again.
-This time, after you select the language, you should hear the clear voice of the OpenAI assistant instead of static.
-
-# This part is only needed if you run the file directly
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
