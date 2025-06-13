@@ -144,22 +144,3 @@ if __name__ == "__main__":
     import uvicorn
     local_port = int(os.getenv("PORT", 5050))
     uvicorn.run(app, host="0.0.0.0", port=local_port)
-Use code with caution.
-Python
-Why This Will Work
-The only meaningful change is in initialize_session. I've corrected the configuration to use output_format instead of audio_format and removed the input_format which isn't necessary.
-# OLD
-session_config = {
-    "type": "session.create",
-    "audio_format": { ... }
-}
-
-# NEW and CORRECT
-session_config = {
-    "type": "session.create",
-    "output_format": {
-        "encoding": "mulaw",
-        "sample_rate": 8000
-    },
-    # ...
-}
