@@ -59,18 +59,23 @@ async def handle_incoming_call(_: Request):
 # 2️⃣  Route based on choice
 # ─────────────────────────────
 @app.api_route("/language-selection", methods=["GET", "POST"])
+@app.api_route("/language-selection", methods=["GET", "POST"])
 async def language_selection(request: Request):
-    form = await request.form()
-    digits = form.get("Digits", "")
+    """Detect DTMF selection without relying on python-multipart."""
+    body_bytes = await request.body()             # raw x-www-form-urlencoded
+    from urllib.parse import parse_qs
+    parsed = parse_qs(body_bytes.decode())
+    digits = parsed.get("Digits", [""])[0]
+
     lang = "es" if digits == "1" else "en"  # default to English
 
     vr = VoiceResponse()
-    host = request.url.hostname  # dynamic for Railway / prod
+    host = request.url.hostname
     ws_url = f"wss://{host}/media-stream?lang={lang}"
     connect = Connect()
     connect.stream(url=ws_url)
     vr.append(connect)
-    return HTMLResponse(str(vr), media_type="application/xml")
+    return HTMLResponse(str(vr), media_type="application/xml")(str(vr), media_type="application/xml")
 
 # ─────────────────────────────
 # 3️⃣  Real‑time Media Stream
@@ -218,7 +223,3 @@ if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
 
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
