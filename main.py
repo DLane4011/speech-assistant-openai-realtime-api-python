@@ -14,23 +14,32 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# ──────────────────────────────────────────────
+# Configuration
+# ──────────────────────────────────────────────
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PORT = int(os.getenv("PORT", 8000))
 OPENAI_PCM_SAMPLE_RATE = 24000
 TWILIO_MULAW_SAMPLE_RATE = 8000
+
+# Public domain that Twilio can reach, e.g. tipline-abc123-uc.a.run.app or your ngrok domain (without protocol)
+PUBLIC_URL = os.getenv("PUBLIC_URL")
 
 if not OPENAI_API_KEY:
     raise RuntimeError("FATAL: OPENAI_API_KEY env var missing.")
 
 app = FastAPI()
 
-# CHANGE THIS to your ngrok public domain (no protocol, no trailing slash)
-PUBLIC_URL = "abcdef1234.ngrok.io"
-
+# ──────────────────────────────────────────────
+# 0️⃣  Health check
+# ──────────────────────────────────────────────
 @app.get("/", response_class=JSONResponse)
 async def health_check():
     return {"status": "ok"}
 
+# ──────────────────────────────────────────────
+# 1️⃣  Greeting + language menu
+# ──────────────────────────────────────────────
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def incoming_call(_: Request):
     vr = VoiceResponse()
@@ -41,29 +50,32 @@ async def incoming_call(_: Request):
     vr.redirect("/language-selection")
     return HTMLResponse(str(vr), media_type="application/xml")
 
+# ──────────────────────────────────────────────
+# 2️⃣  Branch based on DTMF
+# ──────────────────────────────────────────────
 @app.api_route("/language-selection", methods=["GET", "POST"])
 async def language_selection(request: Request):
     body = (await request.body()).decode()
     digits = parse_qs(body).get("Digits", [""])[0]
     lang = "es" if digits.strip() == "1" else "en"
     print("🌐 Language selected:", lang, "digits=", digits)
-
-    # Force public domain here for Twilio stream
+    if not PUBLIC_URL:
+        raise RuntimeError("PUBLIC_URL env var not set. Set it to your public https domain (no protocol)")
     ws_url = f"wss://{PUBLIC_URL}/media-stream?lang={lang}"
     print(f"🌐 Twilio stream websocket URL: {ws_url}")
-
     connect = Connect()
     connect.stream(url=ws_url)
     vr = VoiceResponse()
     vr.append(connect)
     return HTMLResponse(str(vr), media_type="application/xml")
 
+# ──────────────────────────────────────────────
+# 3️⃣  Media stream
+# ──────────────────────────────────────────────
 @app.websocket("/media-stream")
 async def media_stream(ws: WebSocket):
     await ws.accept()
-    print(f"🛰 New media stream connection, raw lang query param: {ws.query_params}")
     lang = ws.query_params.get("lang", "en")
-    print(f"💡 Initializing AI session with prompt language: {lang}")
 
     try:
         async with websockets.connect(
@@ -74,6 +86,7 @@ async def media_stream(ws: WebSocket):
             },
         ) as ai_ws:
             await initialize_session(ai_ws, lang)
+            # Wait to greet until we get caller audio
             greeted = False
             stream_sid = None
             rate_state = None
@@ -120,6 +133,9 @@ async def media_stream(ws: WebSocket):
     except Exception as e:
         print("CRITICAL:", e)
 
+# ──────────────────────────────────────────────
+# 4️⃣  OpenAI helpers
+# ──────────────────────────────────────────────
 async def initialize_session(ai_ws, lang):
     prompt = (
         "You are a calm, neutral AI for an anonymous employee tip line. "
@@ -150,6 +166,9 @@ async def send_initial_greeting(ai_ws, lang):
     }))
     await ai_ws.send(json.dumps({"type": "response.create"}))
 
+# ──────────────────────────────────────────────
+# 5️⃣  Entrypoint
+# ──────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
