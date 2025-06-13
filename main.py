@@ -1,177 +1,140 @@
+✅ Helpful error logging
+
+✅ Simplified structure for clarity and robustness
+
+python
+Copy
+Edit
 import os
 import json
 import base64
-import asyncio
-import websockets
 import audioop
-from urllib.parse import parse_qs
-
-from fastapi import FastAPI, WebSocket, Request
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.websockets import WebSocketDisconnect
-from twilio.twiml.voice_response import VoiceResponse, Connect
+import asyncio
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import PlainTextResponse
+from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+from openai import AsyncOpenAI
+import websockets
 
 load_dotenv()
 
-# ──────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-PORT = int(os.getenv("PORT", 8000))
-OPENAI_PCM_SAMPLE_RATE = 24000
-TWILIO_MULAW_SAMPLE_RATE = 8000
-
-# Public domain that Twilio can reach, e.g. tipline-abc123-uc.a.run.app or your ngrok domain (without protocol)
-PUBLIC_URL = os.getenv("PUBLIC_URL")
-
-if not OPENAI_API_KEY:
-    raise RuntimeError("FATAL: OPENAI_API_KEY env var missing.")
+ASSISTANT_ID = os.getenv("ASSISTANT_ID")
 
 app = FastAPI()
 
-# ──────────────────────────────────────────────
-# 0️⃣  Health check
-# ──────────────────────────────────────────────
-@app.get("/", response_class=JSONResponse)
-async def health_check():
-    return {"status": "ok"}
+# CORS settings if needed
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# ──────────────────────────────────────────────
-# 1️⃣  Greeting + language menu
-# ──────────────────────────────────────────────
-@app.api_route("/incoming-call", methods=["GET", "POST"])
-async def incoming_call(_: Request):
-    vr = VoiceResponse()
-    gather = vr.gather(action="/language-selection", method="POST", num_digits=1, timeout=5)
-    gather.say("You’ve reached the employee tip line. For English, stay on the line.", voice="Polly.Matthew")
-    gather.pause(length=1)
-    gather.say("Para español, presione uno.", voice="Polly.Lupe")
-    vr.redirect("/language-selection")
-    return HTMLResponse(str(vr), media_type="application/xml")
+client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
-# ──────────────────────────────────────────────
-# 2️⃣  Branch based on DTMF
-# ──────────────────────────────────────────────
-@app.api_route("/language-selection", methods=["GET", "POST"])
+@app.post("/incoming-call")
+async def incoming_call(request: Request):
+    # TwiML response to ask language
+    response = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Gather action="/language-selection" numDigits="1" timeout="5">
+        <Say>Welcome to the employee tip line. For English, press 1. Para español, oprima dos.</Say>
+    </Gather>
+    <Say>No input received. Goodbye.</Say>
+</Response>
+"""
+    return PlainTextResponse(response, media_type="application/xml")
+
+@app.post("/language-selection")
 async def language_selection(request: Request):
-    body = (await request.body()).decode()
-    digits = parse_qs(body).get("Digits", [""])[0]
-    lang = "es" if digits.strip() == "1" else "en"
-    print("🌐 Language selected:", lang, "digits=", digits)
-    # Choose domain: env var PUBLIC_URL > header host > request hostname
-    domain = PUBLIC_URL or request.headers.get("x-forwarded-host", request.url.hostname)
-    if not PUBLIC_URL:
-        print("⚠️  PUBLIC_URL not set. Using domain from request:", domain)
-    ws_url = f"wss://{domain}/media-stream?lang={lang}"
-    print(f"🌐 Twilio stream websocket URL: {ws_url}")
-    connect = Connect()
-    connect.stream(url=ws_url)
-    vr = VoiceResponse()
-    vr.append(connect)
-    return HTMLResponse(str(vr), media_type="application/xml")
+    form = await request.form()
+    digits = form.get("Digits", "")
+    lang = "en" if digits != "2" else "es"
 
-# ──────────────────────────────────────────────
-# 3️⃣  Media stream
-# ──────────────────────────────────────────────
+    # Determine PUBLIC_URL
+    public_url = os.getenv("PUBLIC_URL")
+    if not public_url:
+        # Infer from request headers
+        host = request.headers.get("host")
+        if not host:
+            raise RuntimeError("PUBLIC_URL env var not set. Set it to your public https domain (no protocol)")
+        public_url = host
+        print(f"⚠️  PUBLIC_URL not set. Using domain from request: {public_url}")
+    else:
+        print(f"🌍 PUBLIC_URL set from env: {public_url}")
+
+    websocket_url = f"wss://{public_url}/media-stream?lang={lang}"
+    print(f"🌐 Language selected: {lang} digits= {digits}")
+    print(f"🌐 Twilio stream websocket URL: {websocket_url}")
+
+    response = f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Start>
+        <Stream url="{websocket_url}" />
+    </Start>
+    <Say>Start speaking after the beep.</Say>
+    <Pause length="60" />
+    <Say>We did not receive any input. Goodbye.</Say>
+</Response>
+"""
+    return PlainTextResponse(response, media_type="application/xml")
+
 @app.websocket("/media-stream")
-async def media_stream(ws: WebSocket):
-    await ws.accept()
-    lang = ws.query_params.get("lang", "en")
+async def media_stream(websocket: WebSocket):
+    await websocket.accept()
+    print("INFO:     connection open")
 
     try:
+        params = websocket.query_params
+        lang = params.get("lang", "en")
+
+        print("🧠 Connecting to OpenAI realtime websocket...")
         async with websockets.connect(
-            "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01",
-            extra_headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
-                "OpenAI-Beta": "realtime=v1",
-            },
+            "wss://api.openai.com/v1/realtime/speech",
+            extra_headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
         ) as ai_ws:
-            await initialize_session(ai_ws, lang)
-            # Wait to greet until we get caller audio
+            print("🧠 OpenAI websocket connected successfully")
+
+            # Send initial config
+            await ai_ws.send(json.dumps({
+                "assistant_id": ASSISTANT_ID,
+                "language": lang
+            }))
+
             greeted = False
-            stream_sid = None
-            rate_state = None
+            while True:
+                data = await websocket.receive_text()
+                msg = json.loads(data)
 
-            async def twilio_to_openai():
-                nonlocal stream_sid, greeted
-                try:
-                    async for raw in ws.iter_text():
-                        data = json.loads(raw)
-                        evt = data.get("event")
-                        if evt == "start":
-                            stream_sid = data["start"]["streamSid"]
-                            print("🔊 Twilio stream started", stream_sid)
-                        elif evt == "media" and ai_ws.open:
-                            if not greeted:
-                                await send_initial_greeting(ai_ws, lang)
-                                greeted = True
-                            await ai_ws.send(json.dumps({
-                                "type": "input_audio_buffer.append",
-                                "audio": data["media"]["payload"],
-                            }))
-                except WebSocketDisconnect:
-                    if ai_ws.open:
-                        await ai_ws.close()
+                evt = msg.get("event")
+                if evt == "start":
+                    stream_sid = msg["start"]["streamSid"]
+                    print(f"🔊 Twilio stream started {stream_sid}")
 
-            async def openai_to_twilio():
-                nonlocal rate_state
-                try:
-                    async for ai_raw in ai_ws:
-                        ai = json.loads(ai_raw)
-                        if ai.get("type") == "response.audio.delta" and "delta" in ai:
-                            pcm24 = base64.b64decode(ai["delta"])
-                            pcm8, rate_state = audioop.ratecv(pcm24, 2, 1, OPENAI_PCM_SAMPLE_RATE, TWILIO_MULAW_SAMPLE_RATE, rate_state)
-                            mulaw = audioop.lin2ulaw(pcm8, 2)
-                            await ws.send_json({
-                                "event": "media",
-                                "streamSid": stream_sid,
-                                "media": {"payload": base64.b64encode(mulaw).decode()},
-                            })
-                except websockets.exceptions.ConnectionClosed:
-                    pass
+                elif evt == "media":
+                    audio = base64.b64decode(msg["media"]["payload"])
+                    # Convert Twilio audio to 16-bit PCM mono
+                    pcm = audioop.ulaw2lin(audio, 2)
+                    await ai_ws.send(pcm)
+                    print("📥 Forwarding media to OpenAI")
 
-            await asyncio.gather(twilio_to_openai(), openai_to_twilio())
+                elif evt == "stop":
+                    print("🛑 Twilio stream ended")
+                    break
+
+                if not greeted:
+                    print("✅ Media is flowing")
+                    greeted = True
+
+    except WebSocketDisconnect:
+        print("INFO:     WebSocket disconnected")
+
     except Exception as e:
-        print("CRITICAL:", e)
+        print("CRITICAL WebSocket error:", repr(e))
 
-# ──────────────────────────────────────────────
-# 4️⃣  OpenAI helpers
-# ──────────────────────────────────────────────
-async def initialize_session(ai_ws, lang):
-    prompt = (
-        "You are a calm, neutral AI for an anonymous employee tip line. "
-        "Ask one question at a time and wait for the caller to finish before speaking again. "
-        "Gather who, what, when, where, and any evidence. "
-        f"Respond only in {'Spanish' if lang == 'es' else 'English'}."
-    )
-    await ai_ws.send(json.dumps({
-        "type": "session.update",
-        "session": {
-            "turn_detection": {"type": "server_vad"},
-            "instructions": prompt,
-        },
-    }))
-
-async def send_initial_greeting(ai_ws, lang):
-    greetings = {
-        "en": "Thank you for calling the anonymous tip line. How can I assist you today?",
-        "es": "Gracias por llamar a la línea de denuncias anónimas. ¿Cómo puedo ayudarle hoy?",
-    }
-    await ai_ws.send(json.dumps({
-        "type": "conversation.item.create",
-        "item": {
-            "type": "message",
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": greetings[lang]}],
-        },
-    }))
-    await ai_ws.send(json.dumps({"type": "response.create"}))
-
-# ──────────────────────────────────────────────
-# 5️⃣  Entrypoint
-# ──────────────────────────────────────────────
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
-
+    finally:
+        await websocket.close()
+        print("INFO:     connection closed")
