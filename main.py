@@ -59,9 +59,11 @@ async def language_selection(request: Request):
     digits = parse_qs(body).get("Digits", [""])[0]
     lang = "es" if digits.strip() == "1" else "en"
     print("🌐 Language selected:", lang, "digits=", digits)
+    # Choose domain: env var PUBLIC_URL > header host > request hostname
+    domain = PUBLIC_URL or request.headers.get("x-forwarded-host", request.url.hostname)
     if not PUBLIC_URL:
-        raise RuntimeError("PUBLIC_URL env var not set. Set it to your public https domain (no protocol)")
-    ws_url = f"wss://{PUBLIC_URL}/media-stream?lang={lang}"
+        print("⚠️  PUBLIC_URL not set. Using domain from request:", domain)
+    ws_url = f"wss://{domain}/media-stream?lang={lang}"
     print(f"🌐 Twilio stream websocket URL: {ws_url}")
     connect = Connect()
     connect.stream(url=ws_url)
@@ -172,3 +174,4 @@ async def send_initial_greeting(ai_ws, lang):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
