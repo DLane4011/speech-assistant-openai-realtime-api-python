@@ -14,9 +14,6 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ──────────────────────────────────────────────
-# Configuration
-# ──────────────────────────────────────────────
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PORT = int(os.getenv("PORT", 8000))
 OPENAI_PCM_SAMPLE_RATE = 24000
@@ -27,16 +24,10 @@ if not OPENAI_API_KEY:
 
 app = FastAPI()
 
-# ──────────────────────────────────────────────
-# 0️⃣  Health check
-# ──────────────────────────────────────────────
 @app.get("/", response_class=JSONResponse)
 async def health_check():
     return {"status": "ok"}
 
-# ──────────────────────────────────────────────
-# 1️⃣  Greeting + language menu
-# ──────────────────────────────────────────────
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def incoming_call(_: Request):
     vr = VoiceResponse()
@@ -47,30 +38,27 @@ async def incoming_call(_: Request):
     vr.redirect("/language-selection")
     return HTMLResponse(str(vr), media_type="application/xml")
 
-# ──────────────────────────────────────────────
-# 2️⃣  Branch based on DTMF
-# ──────────────────────────────────────────────
 @app.api_route("/language-selection", methods=["GET", "POST"])
 async def language_selection(request: Request):
     body = (await request.body()).decode()
     digits = parse_qs(body).get("Digits", [""])[0]
     lang = "es" if digits.strip() == "1" else "en"
-    print("🌐 Language selected:", lang, "digits=", digits)
+    print(f"🌐 Language selected: {lang} (Digits: {digits})")
+
     host = request.headers.get("x-forwarded-host", request.url.hostname)
     ws_url = f"wss://{host}/media-stream?lang={lang}"
+
     connect = Connect()
     connect.stream(url=ws_url)
     vr = VoiceResponse()
     vr.append(connect)
     return HTMLResponse(str(vr), media_type="application/xml")
 
-# ──────────────────────────────────────────────
-# 3️⃣  Media stream WebSocket handler
-# ──────────────────────────────────────────────
 @app.websocket("/media-stream")
 async def media_stream(ws: WebSocket):
     await ws.accept()
     lang = ws.query_params.get("lang", "en")
+    print(f"🛰 New media stream connection, lang={lang}")
 
     try:
         async with websockets.connect(
@@ -80,7 +68,8 @@ async def media_stream(ws: WebSocket):
                 "OpenAI-Beta": "realtime=v1",
             },
         ) as ai_ws:
-            # Initialize session with language-specific instructions
+
+            # Send session instructions BEFORE any audio
             await initialize_session(ai_ws, lang)
 
             greeted = False
@@ -92,19 +81,32 @@ async def media_stream(ws: WebSocket):
                 try:
                     async for raw in ws.iter_text():
                         data = json.loads(raw)
-                        evt = data.get("event")
-                        if evt == "start":
+                        event_type = data.get("event")
+                        if event_type == "start":
                             stream_sid = data["start"]["streamSid"]
-                            print("🔊 Twilio stream started", stream_sid)
-                        elif evt == "media" and ai_ws.open:
+                            print(f"🔊 Twilio stream started: {stream_sid}")
+
+                        elif event_type == "media" and ai_ws.open:
+                            # Send initial greeting only once at the start of media stream
                             if not greeted:
+                                print("💬 Sending initial greeting to AI")
                                 await send_initial_greeting(ai_ws, lang)
                                 greeted = True
+
+                            # Send audio payload from Twilio to OpenAI
+                            audio_b64 = data["media"]["payload"]
                             await ai_ws.send(json.dumps({
                                 "type": "input_audio_buffer.append",
-                                "audio": data["media"]["payload"],
+                                "audio": audio_b64,
                             }))
+
+                        elif event_type == "stop":
+                            print("🔇 Twilio stream stopped")
+                            if ai_ws.open:
+                                await ai_ws.close()
+
                 except WebSocketDisconnect:
+                    print("⚠️ Twilio websocket disconnected")
                     if ai_ws.open:
                         await ai_ws.close()
 
@@ -112,27 +114,42 @@ async def media_stream(ws: WebSocket):
                 nonlocal rate_state
                 try:
                     async for ai_raw in ai_ws:
-                        ai = json.loads(ai_raw)
-                        if ai.get("type") == "response.audio.delta" and "delta" in ai:
-                            pcm24 = base64.b64decode(ai["delta"])
-                            pcm8, rate_state = audioop.ratecv(pcm24, 2, 1, OPENAI_PCM_SAMPLE_RATE, TWILIO_MULAW_SAMPLE_RATE, rate_state)
+                        ai_msg = json.loads(ai_raw)
+
+                        if ai_msg.get("type") == "response.audio.delta" and "delta" in ai_msg:
+                            pcm24 = base64.b64decode(ai_msg["delta"])
+                            pcm8, rate_state = audioop.ratecv(
+                                pcm24, 2, 1,
+                                OPENAI_PCM_SAMPLE_RATE,
+                                TWILIO_MULAW_SAMPLE_RATE,
+                                rate_state
+                            )
                             mulaw = audioop.lin2ulaw(pcm8, 2)
                             await ws.send_json({
                                 "event": "media",
                                 "streamSid": stream_sid,
                                 "media": {"payload": base64.b64encode(mulaw).decode()},
                             })
-                except websockets.exceptions.ConnectionClosed:
-                    pass
 
+                        elif ai_msg.get("type") == "session.end":
+                            print("ℹ️ AI session ended")
+                            await ws.close()
+                            break
+
+                        elif ai_msg.get("type") == "response.error":
+                            print("❌ AI error:", ai_msg)
+                            await ws.close()
+                            break
+
+                except websockets.exceptions.ConnectionClosed:
+                    print("⚠️ AI websocket closed")
+
+            # Run both sending and receiving concurrently
             await asyncio.gather(twilio_to_openai(), openai_to_twilio())
 
     except Exception as e:
-        print("CRITICAL:", e)
+        print(f"🔥 CRITICAL ERROR: {e}")
 
-# ──────────────────────────────────────────────
-# 4️⃣  OpenAI helpers
-# ──────────────────────────────────────────────
 async def initialize_session(ai_ws, lang):
     prompt_en = (
         "You are a calm, neutral AI for an anonymous employee tip line. "
@@ -150,6 +167,8 @@ async def initialize_session(ai_ws, lang):
     )
     prompt = prompt_es if lang == "es" else prompt_en
 
+    print(f"💡 Initializing AI session with prompt language: {lang}")
+
     await ai_ws.send(json.dumps({
         "type": "session.update",
         "session": {
@@ -164,6 +183,7 @@ async def send_initial_greeting(ai_ws, lang):
         "es": "Gracias por llamar a la línea de denuncias anónimas. ¿Cómo puedo ayudarle hoy?",
     }
     greeting_text = greetings.get(lang, greetings["en"])
+    print(f"💬 Sending greeting: {greeting_text}")
 
     await ai_ws.send(json.dumps({
         "type": "conversation.item.create",
@@ -175,9 +195,6 @@ async def send_initial_greeting(ai_ws, lang):
     }))
     await ai_ws.send(json.dumps({"type": "response.create"}))
 
-# ──────────────────────────────────────────────
-# 5️⃣  Entrypoint
-# ──────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
