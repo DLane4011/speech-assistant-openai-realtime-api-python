@@ -17,6 +17,10 @@ load_dotenv()
 # --- Configuration ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PORT = int(os.getenv("PORT", 8000))
+# Let's assume OpenAI is sending at 16kHz, a common rate for high-quality voice.
+# If the voice is still off, the next most likely value is 24000.
+OPENAI_PCM_SAMPLE_RATE = 16000
+TWILIO_MULAW_SAMPLE_RATE = 8000
 
 if not OPENAI_API_KEY:
     raise RuntimeError("FATAL: OPENAI_API_KEY not found in environment variables.")
@@ -71,6 +75,8 @@ async def handle_media_stream(websocket: WebSocket):
             await send_initial_greeting(openai_ws, lang)
 
             stream_sid = None
+            # This state is needed for resampling audio that comes in multiple chunks
+            audio_rate_conversion_state = None
             
             async def receive_from_twilio():
                 nonlocal stream_sid
@@ -86,26 +92,25 @@ async def handle_media_stream(websocket: WebSocket):
                     if openai_ws.open: await openai_ws.close()
 
             async def send_to_twilio():
-                nonlocal stream_sid
+                nonlocal stream_sid, audio_rate_conversion_state
                 try:
                     async for oa_raw in openai_ws:
                         oa = json.loads(oa_raw)
                         if oa.get("type") == "response.audio.delta" and "delta" in oa:
-                            # ✨ TRANSCODING LOGIC IS HERE ✨
-                            # 1. Get the base64 string of PCM audio from OpenAI
                             pcm_b64_string = oa["delta"]
-                            
-                            # 2. Decode it into raw PCM bytes
                             pcm_bytes = base64.b64decode(pcm_b64_string)
                             
-                            # 3. Convert the PCM bytes to mulaw bytes (the format Twilio needs)
-                            # The '2' means the source is 16-bit audio.
-                            mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2)
+                            # ✨ THE FIX IS HERE: Downsample the audio ✨
+                            # 1. Convert the high-sample-rate PCM to the correct 8000Hz rate
+                            (downsampled_pcm, audio_rate_conversion_state) = audioop.ratecv(
+                                pcm_bytes, 2, 1, OPENAI_PCM_SAMPLE_RATE, TWILIO_MULAW_SAMPLE_RATE, audio_rate_conversion_state
+                            )
                             
-                            # 4. Encode the mulaw bytes back into a base64 string for Twilio
+                            # 2. Convert the 8000Hz PCM to mulaw
+                            mulaw_bytes = audioop.lin2ulaw(downsampled_pcm, 2)
+                            
+                            # 3. Encode and send to Twilio
                             mulaw_b64_string = base64.b64encode(mulaw_bytes).decode('utf-8')
-
-                            # 5. Send the correctly formatted audio to Twilio
                             await websocket.send_json({
                                 "event": "media",
                                 "streamSid": stream_sid,
@@ -122,10 +127,7 @@ async def handle_media_stream(websocket: WebSocket):
         print(f"CRITICAL: Failed to connect or run main WebSocket loop: {e}")
 
 
-# --- Helper Functions for OpenAI ---
-
 async def initialize_session(openai_ws, lang: str):
-    """Sends the initial configuration and system prompt to OpenAI."""
     system_prompt = (
         "You are a helpful and professional AI assistant for an employee tip line. "
         "You are to be respectful, confidential, and clear in your communication. "
@@ -133,21 +135,13 @@ async def initialize_session(openai_ws, lang: str):
         f"You must conduct the entire conversation in {'Spanish' if lang == 'es' else 'English'}."
     )
     
-    # We will still ask for mulaw, but our new code will work even if OpenAI ignores this.
-    session_config = {
-        "type": "session.update",
-        "session": {
-            "output_format": { "encoding": "mulaw", "sample_rate": 8000 },
-            "instructions": system_prompt
-        }
-    }
+    session_config = { "type": "session.update", "session": { "instructions": system_prompt } }
     
     print("INFO: Updating OpenAI session with config:", json.dumps(session_config))
     await openai_ws.send(json.dumps(session_config))
 
 
 async def send_initial_greeting(openai_ws, lang: str):
-    """Sends a synthetic message to make the AI speak its first greeting."""
     prompts = {"en": "Please greet the caller in English and ask how you can assist.", "es": "Por favor, saluda al llamante en español y pregunta en qué puedes ayudar."}
     initial_item = {
         "type": "conversation.item.create",
@@ -156,6 +150,11 @@ async def send_initial_greeting(openai_ws, lang: str):
     await openai_ws.send(json.dumps(initial_item))
     await openai_ws.send(json.dumps({"type": "response.create"}))
 
+
+if __name__ == "__main__":
+    import uvicorn
+    local_port = int(os.getenv("PORT", 5050))
+    uvicorn.run(app, host="0.0.0.0", port=local_port)
 
 if __name__ == "__main__":
     import uvicorn
