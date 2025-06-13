@@ -44,24 +44,32 @@ async def index_page():
     return {"message": "Twilio Media Stream Server is running!"}
 
 # ─────────────────────────────
-# 1️⃣  Greeting + language menu
+# 1️⃣  Greeting + language menu (improved Polly voices)
 # ─────────────────────────────
 @app.api_route("/incoming-call", methods=["GET", "POST"])
 async def handle_incoming_call(_: Request):
     """First Twilio webhook → offer English (default) / Spanish (press 1)."""
     vr = VoiceResponse()
+
     gather = vr.gather(
         action="/language-selection",
         method="POST",
         num_digits=1,
         timeout=4  # seconds to wait for DTMF before falling through
     )
+    # Natural‑sounding Amazon Polly voices
     gather.say(
-        "Thank you for contacting the Tip Line. For English, stay on the line. "
-        "Para español, presione el uno.",
-        voice="alice",
+        "Thank you for contacting the Tip Line. For English, stay on the line.",
+        voice="Polly.Matthew",
         language="en-US",
     )
+    gather.pause(length=0.4)
+    gather.say(
+        "Para español, presione el uno.",
+        voice="Polly.Lupe",
+        language="es-US",
+    )
+
     # If user is silent (no DTMF) Twilio will POST to /language-selection with no Digits
     vr.redirect("/language-selection")
     return HTMLResponse(str(vr), media_type="application/xml")
@@ -71,10 +79,10 @@ async def handle_incoming_call(_: Request):
 # ─────────────────────────────
 @app.api_route("/language-selection", methods=["GET", "POST"])
 async def language_selection(request: Request):
-    """Read the Digits param without python‑multipart, choose "en" or "es"."""
+    """Read the Digits param without python‑multipart, choose 'en' or 'es'."""
     body = (await request.body()).decode()
     digits = parse_qs(body).get("Digits", [""])[0]
-    lang = "es" if digits == "1" else "en"
+    lang = "es" if digits.strip() == "1" else "en"
 
     host = request.url.hostname  # dynamic for Railway etc.
     ws_url = f"wss://{host}/media-stream?lang={lang}"
@@ -226,35 +234,4 @@ async def send_initial_conversation_item(openai_ws, lang: str):
 
 async def initialize_session(openai_ws, lang: str):
     instructions = (
-        "You are a helpful and bubbly AI assistant. "
-        "You love dad jokes, owl jokes, and subtle rickrolling. "
-        "Stay positive and add jokes when appropriate."
-    )
-    if lang == "es":
-        instructions += " Respond only in Spanish."
-
-    await openai_ws.send(
-        json.dumps(
-            {
-                "type": "session.update",
-                "session": {
-                    "turn_detection": {"type": "server_vad"},
-                    "input_audio_format": "g711_ulaw",
-                    "output_audio_format": "g711_ulaw",
-                    "voice": VOICE,
-                    "instructions": instructions,
-                    "modalities": ["text", "audio"],
-                    "temperature": 0.8,
-                },
-            }
-        )
-    )
-
-# ─────────────────────────────
-# 5️⃣  Entrypoint
-# ─────────────────────────────
-if __name__ == "__main__":
-    import uvicorn
-
-    uvicorn.run(app, host="0.0.0.0", port=PORT)
-
+        "You are
