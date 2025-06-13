@@ -1,7 +1,9 @@
 import os
 import json
+import base64
 import asyncio
 import websockets
+import audioop  # ✨ Import the built-in library for audio operations
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, WebSocket, Request
@@ -89,7 +91,26 @@ async def handle_media_stream(websocket: WebSocket):
                     async for oa_raw in openai_ws:
                         oa = json.loads(oa_raw)
                         if oa.get("type") == "response.audio.delta" and "delta" in oa:
-                            await websocket.send_json({"event": "media", "streamSid": stream_sid, "media": {"payload": oa["delta"]}})
+                            # ✨ TRANSCODING LOGIC IS HERE ✨
+                            # 1. Get the base64 string of PCM audio from OpenAI
+                            pcm_b64_string = oa["delta"]
+                            
+                            # 2. Decode it into raw PCM bytes
+                            pcm_bytes = base64.b64decode(pcm_b64_string)
+                            
+                            # 3. Convert the PCM bytes to mulaw bytes (the format Twilio needs)
+                            # The '2' means the source is 16-bit audio.
+                            mulaw_bytes = audioop.lin2ulaw(pcm_bytes, 2)
+                            
+                            # 4. Encode the mulaw bytes back into a base64 string for Twilio
+                            mulaw_b64_string = base64.b64encode(mulaw_bytes).decode('utf-8')
+
+                            # 5. Send the correctly formatted audio to Twilio
+                            await websocket.send_json({
+                                "event": "media",
+                                "streamSid": stream_sid,
+                                "media": {"payload": mulaw_b64_string},
+                            })
                 except websockets.exceptions.ConnectionClosed:
                     pass
                 except Exception as e:
@@ -103,7 +124,6 @@ async def handle_media_stream(websocket: WebSocket):
 
 # --- Helper Functions for OpenAI ---
 
-# ✨ FINAL FIX IS HERE: Changed 'session.create' to 'session.update' ✨
 async def initialize_session(openai_ws, lang: str):
     """Sends the initial configuration and system prompt to OpenAI."""
     system_prompt = (
@@ -113,15 +133,11 @@ async def initialize_session(openai_ws, lang: str):
         f"You must conduct the entire conversation in {'Spanish' if lang == 'es' else 'English'}."
     )
     
-    # Per the error log, we must use 'session.update' not 'session.create'.
-    # The parameters are nested under a 'session' object.
+    # We will still ask for mulaw, but our new code will work even if OpenAI ignores this.
     session_config = {
         "type": "session.update",
         "session": {
-            "output_format": {
-                "encoding": "mulaw",  # This is the format Twilio needs (μ-law)
-                "sample_rate": 8000
-            },
+            "output_format": { "encoding": "mulaw", "sample_rate": 8000 },
             "instructions": system_prompt
         }
     }
