@@ -94,32 +94,33 @@ async def media(ws: WebSocket):
 
         async def twilio_to_openai():
             nonlocal greeted, stream_sid
-            try:
-                async for raw in ws.iter_text():
-                    data = json.loads(raw)
-                    evt = data.get("event")
-        
-                    if evt == "start":
-                        stream_sid = data["start"]["streamSid"]
-                        print("Twilio stream started", stream_sid)
-        
-                    elif evt == "media":
-                        print("📥 media payload received:", data["media"].get("payload", "")[:10])  # Logging here
-        
-                        if not greeted:
-                            await send_greeting(ai, lang)
-                            greeted = True
-        
-                        await ai.send(json.dumps({
-                            "type": "input_audio_buffer.append",
-                            "audio": data["media"]["payload"],
-                        }))
-        
-                    elif evt == "stop":
-                        break
-            
-                except WebSocketDisconnect:
-                    pass
+        try:
+            async for raw in ws.iter_text():
+                data = json.loads(raw)
+                evt = data.get("event")
+    
+                if evt == "start":
+                    stream_sid = data["start"]["streamSid"]
+                    print("Twilio stream started", stream_sid)
+    
+                elif evt == "media":
+                    # ✅ Logging so we know audio is coming in
+                    print("📥 media payload received:", data["media"].get("payload", "")[:10])
+    
+                    if not greeted:
+                        await send_greeting(ai, lang)
+                        greeted = True
+    
+                    await ai.send(json.dumps({
+                        "type": "input_audio_buffer.append",
+                        "audio": data["media"]["payload"],
+                    }))
+    
+                elif evt == "stop":
+                    break
+
+        except WebSocketDisconnect:
+            pass
 
             async def openai_to_twilio():
                 try:
