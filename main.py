@@ -115,20 +115,14 @@ async def media(ws: WebSocket):
                     pass
 
             async def openai_to_twilio():
-                nonlocal rate_state
                 try:
                     async for raw in ai:
                         msg = json.loads(raw)
                         if msg.get("type") == "response.audio.delta" and "delta" in msg:
-                            pcm24 = base64.b64decode(msg["delta"])
-                            pcm8, rate_state = audioop.ratecv(
-                                pcm24, 2, 1, OPENAI_PCM_RATE, TWILIO_MULAW_RATE, rate_state
-                            )
-                            mulaw = audioop.lin2ulaw(pcm8, 2)
                             await ws.send_json({
                                 "event": "media",
                                 "streamSid": stream_sid,
-                                "media": {"payload": base64.b64encode(mulaw).decode()},
+                                "media": {"payload": msg["delta"]},
                             })
                 except websockets.exceptions.ConnectionClosed:
                     pass
@@ -182,3 +176,4 @@ async def send_greeting(ai_ws, lang: str):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=PORT)
+
