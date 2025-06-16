@@ -17,10 +17,7 @@ print("--- PYTHON SCRIPT STARTING ---", flush=True)
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
-
-# --- We are using the original, correct model name ---
 MODEL = "gpt-4o-realtime-preview-2024-10-01"
-# ----------------------------------------------------
 
 if not OPENAI_API_KEY:
     print("!!! FATAL: OPENAI_API_KEY IS MISSING FROM ENVIRONMENT VARIABLES !!!", flush=True)
@@ -55,7 +52,11 @@ async def choose_language(request: Request):
     print(f"Language selected: {lang} (digits received: '{digits}')", flush=True)
 
     domain = PUBLIC_URL or request.headers.get("host")
-    ws_url = f"wss://{domain}/media-stream?lang={lang}"
+    
+    # --- FIX #1: Change the URL to use a path parameter ---
+    ws_url = f"wss://{domain}/media-stream/{lang}"
+    # ------------------------------------------------------
+    
     print(f"WebSocket URL -> {ws_url}", flush=True)
 
     vr = VoiceResponse()
@@ -66,11 +67,14 @@ async def choose_language(request: Request):
     vr.say("We're sorry, but there was an issue connecting. Please call back later.")
     return HTMLResponse(str(vr), media_type="application/xml")
 
-@app.websocket("/media-stream")
-async def media(ws: WebSocket):
+# --- FIX #2: Update the WebSocket endpoint to read the language from the path ---
+@app.websocket("/media-stream/{lang}")
+async def media(ws: WebSocket, lang: str):
+# --------------------------------------------------------------------------
     print("--- MEDIA STREAM FUNCTION STARTED ---", flush=True)
     await ws.accept()
-    lang = ws.query_params.get("lang", "en")
+    
+    # The 'lang' variable now comes directly from the URL path.
     print(f"WebSocket connection from Twilio accepted for language: {lang}", flush=True)
 
     try:
@@ -86,19 +90,11 @@ async def media(ws: WebSocket):
                 print(">>> SUCCESS: Connection to OpenAI established.", flush=True)
                 
                 await setup_session(ai, lang)
-                
-                # --- FIX FOR SPANISH (Race Condition) ---
-                # Give OpenAI a moment to process the new prompt before we ask it to speak.
                 await asyncio.sleep(0.25)
-                # ----------------------------------------
-                
                 await send_greeting(ai, lang)
 
                 stream_sid = None
-                # --- FIX FOR DROPPED CALL ---
-                # This flag tracks if we've received audio from the user in the current turn.
                 has_received_media = False
-                # ----------------------------
 
                 async def twilio_to_openai():
                     nonlocal stream_sid, has_received_media
@@ -109,19 +105,13 @@ async def media(ws: WebSocket):
                             if evt == "start":
                                 stream_sid = data["start"]["streamSid"]
                             elif evt == "media":
-                                # --- FIX FOR DROPPED CALL ---
-                                # If we get audio, set the flag to true.
                                 has_received_media = True
-                                # ----------------------------
                                 await ai.send_str(json.dumps({ "type": "input_audio_buffer.append", "audio": data["media"]["payload"] }))
                             elif evt == "stop":
-                                # --- FIX FOR DROPPED CALL ---
-                                # Only commit the audio if the user has actually spoken.
                                 if has_received_media:
                                     print("Committing audio buffer to OpenAI...", flush=True)
                                     await ai.send_str(json.dumps({"type": "input_audio_buffer.commit"}))
-                                    has_received_media = False # Reset for the next turn
-                                # ----------------------------
+                                    has_received_media = False
                     except WebSocketDisconnect:
                         print("Twilio WebSocket disconnected.", flush=True)
 
