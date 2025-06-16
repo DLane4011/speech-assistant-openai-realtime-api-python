@@ -18,7 +18,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 
-# --- Returning to the original, correct model name ---
+# --- We are using the original, correct model name ---
 MODEL = "gpt-4o-realtime-preview-2024-10-01"
 # ----------------------------------------------------
 
@@ -86,12 +86,22 @@ async def media(ws: WebSocket):
                 print(">>> SUCCESS: Connection to OpenAI established.", flush=True)
                 
                 await setup_session(ai, lang)
+                
+                # --- FIX FOR SPANISH (Race Condition) ---
+                # Give OpenAI a moment to process the new prompt before we ask it to speak.
+                await asyncio.sleep(0.25)
+                # ----------------------------------------
+                
                 await send_greeting(ai, lang)
 
                 stream_sid = None
+                # --- FIX FOR DROPPED CALL ---
+                # This flag tracks if we've received audio from the user in the current turn.
+                has_received_media = False
+                # ----------------------------
 
                 async def twilio_to_openai():
-                    nonlocal stream_sid
+                    nonlocal stream_sid, has_received_media
                     try:
                         async for raw in ws.iter_text():
                             data = json.loads(raw)
@@ -99,9 +109,19 @@ async def media(ws: WebSocket):
                             if evt == "start":
                                 stream_sid = data["start"]["streamSid"]
                             elif evt == "media":
+                                # --- FIX FOR DROPPED CALL ---
+                                # If we get audio, set the flag to true.
+                                has_received_media = True
+                                # ----------------------------
                                 await ai.send_str(json.dumps({ "type": "input_audio_buffer.append", "audio": data["media"]["payload"] }))
                             elif evt == "stop":
-                                await ai.send_str(json.dumps({"type": "input_audio_buffer.commit"}))
+                                # --- FIX FOR DROPPED CALL ---
+                                # Only commit the audio if the user has actually spoken.
+                                if has_received_media:
+                                    print("Committing audio buffer to OpenAI...", flush=True)
+                                    await ai.send_str(json.dumps({"type": "input_audio_buffer.commit"}))
+                                    has_received_media = False # Reset for the next turn
+                                # ----------------------------
                     except WebSocketDisconnect:
                         print("Twilio WebSocket disconnected.", flush=True)
 
