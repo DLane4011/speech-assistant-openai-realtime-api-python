@@ -1,3 +1,4 @@
+```python
 import os
 import json
 import asyncio
@@ -17,7 +18,7 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 MODEL = "gpt-4o-realtime-preview-2024-10-01"
-# --- FIX FOR CHOPPY AUDIO: Trying a different voice model ---
+# --- FIX FOR CHOPPY AUDIO: Trying a different, often smoother, voice model ---
 VOICE_ID = "nova" 
 
 if not OPENAI_API_KEY:
@@ -77,7 +78,6 @@ async def media_stream(websocket: WebSocket, lang: str):
                 await send_greeting(ai_websocket, lang)
 
                 stream_sid = None
-                # --- FIX FOR DROPPED CALLS ---
                 has_received_media = False
 
                 async def twilio_to_openai():
@@ -93,8 +93,19 @@ async def media_stream(websocket: WebSocket, lang: str):
                                 await ai_websocket.send_str(json.dumps({"type": "input_audio_buffer.append", "audio": data["media"]["payload"]}))
                             elif event == "stop":
                                 if has_received_media:
-                                    await asyncio.sleep(0.15) # Pause for network
-                                    await ai_websocket.send_str(json.dumps({"type": "input_audio_buffer.commit"}))
+                                    await asyncio.sleep(0.15)
+                                    await ai_websocket.send_str(json.dumps({"type": "input_audio_buffer.es' else "You MUST respond exclusively in English."
+    prompt = (
+        "You are an AI assistant for an anonymous employee tip line. Your tone is calm, professional, and neutral. "
+        "Your primary goal is to gather clear and detailed information about an incident. "
+        "Ask one clear question at a time and wait for the caller to finish speaking before you reply. "
+        "Your questions should guide the caller to provide information about: who was involved, what happened, "
+        "when it occurred, where it took place, and if there is any evidence. "
+        f"{language_instruction} Do not switch languages under any circumstances."
+    )
+    await ai_ws.send_str(json.dumps({
+        "type": "session.update",
+        "session": {"turn_detection": {"type": "server_vad"}, "input_audio_format": "g711_ulaw", "output_audio_format": "g711_ulaw",commit"}))
                                     has_received_media = False
                     except WebSocketDisconnect:
                         print("Twilio WebSocket disconnected.")
@@ -123,14 +134,30 @@ async def media_stream(websocket: WebSocket, lang: str):
 
 
 async def setup_session(ai_ws, lang: str):
-    language_instruction = "You MUST respond exclusively in Spanish." if lang == 'es' else "You MUST respond exclusively in English."
+     "voice": VOICE_ID, "instructions": prompt}
+    }))
+
+async def send_greeting(ai_ws, lang: str):
+    greetings = {
+        "en": "Thank you for calling the anonymous tip line. How can I help you today?",
+        "es": "Gracias por llamar a la línea de denuncias anónimas. ¿Cómo puedo ayudarle hoy?",
+    }
+    await ai_ws.send_str(json.dumps({
+        "type": "conversation.item.create",
+        "item": {"language_instruction = "You MUST respond exclusively in Spanish." if lang == 'es' else "You MUST respond exclusively in English."
     prompt = (
         "You are an AI assistant for an anonymous employee tip line. Your tone is calm, professional, and neutral. "
         "Your primary goal is to gather clear and detailed information about an incident. "
-        "Ask one clear question at a time and wait for the caller to finish speaking before you reply. "
+        "Ask one clear question at a time and wait for the caller to finish speaking before youtype": "message", "role": "assistant", "content": [{"type": "text", "text": greetings[lang]}]}
+    }))
+    await ai_ws.send_str(json.dumps({"type": reply. "
         "Your questions should guide the caller to provide information about: who was involved, what happened, "
         "when it occurred, where it took place, and if there is any evidence. "
-        f"{language_instruction} Do not switch languages under any circumstances."
+        f "response.create"}))
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 8080))
+    uvicorn.run(app, host="0.0."{language_instruction} Do not switch languages under any circumstances."
     )
     await ai_ws.send_str(json.dumps({
         "type": "session.update",
