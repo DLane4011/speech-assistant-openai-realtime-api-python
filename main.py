@@ -52,11 +52,7 @@ async def choose_language(request: Request):
     print(f"Language selected: {lang} (digits received: '{digits}')", flush=True)
 
     domain = PUBLIC_URL or request.headers.get("host")
-    
-    # --- FIX #1: Change the URL to use a path parameter ---
     ws_url = f"wss://{domain}/media-stream/{lang}"
-    # ------------------------------------------------------
-    
     print(f"WebSocket URL -> {ws_url}", flush=True)
 
     vr = VoiceResponse()
@@ -67,14 +63,10 @@ async def choose_language(request: Request):
     vr.say("We're sorry, but there was an issue connecting. Please call back later.")
     return HTMLResponse(str(vr), media_type="application/xml")
 
-# --- FIX #2: Update the WebSocket endpoint to read the language from the path ---
 @app.websocket("/media-stream/{lang}")
 async def media(ws: WebSocket, lang: str):
-# --------------------------------------------------------------------------
     print("--- MEDIA STREAM FUNCTION STARTED ---", flush=True)
     await ws.accept()
-    
-    # The 'lang' variable now comes directly from the URL path.
     print(f"WebSocket connection from Twilio accepted for language: {lang}", flush=True)
 
     try:
@@ -109,6 +101,9 @@ async def media(ws: WebSocket, lang: str):
                                 await ai.send_str(json.dumps({ "type": "input_audio_buffer.append", "audio": data["media"]["payload"] }))
                             elif evt == "stop":
                                 if has_received_media:
+                                    # --- THE FINAL FIX: A tiny pause for the network ---
+                                    await asyncio.sleep(0.15) # 150ms pause
+                                    # ----------------------------------------------------
                                     print("Committing audio buffer to OpenAI...", flush=True)
                                     await ai.send_str(json.dumps({"type": "input_audio_buffer.commit"}))
                                     has_received_media = False
