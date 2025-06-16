@@ -18,7 +18,9 @@ print("--- PYTHON SCRIPT STARTING ---", flush=True)
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
-MODEL = "gpt-4o"
+# --- THIS IS THE FIX ---
+MODEL = "gpt-4o-2024-05-13"
+# ---------------------
 
 if not OPENAI_API_KEY:
     print("!!! FATAL: OPENAI_API_KEY IS MISSING FROM ENVIRONMENT VARIABLES !!!", flush=True)
