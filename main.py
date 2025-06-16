@@ -18,8 +18,8 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 
-# --- FIX #1: Use the universally available model ---
-MODEL = "gpt-3.5-turbo"
+# --- Returning to the original, correct model name ---
+MODEL = "gpt-4o-realtime-preview-2024-10-01"
 # ----------------------------------------------------
 
 if not OPENAI_API_KEY:
@@ -101,9 +101,7 @@ async def media(ws: WebSocket):
                             elif evt == "media":
                                 await ai.send_str(json.dumps({ "type": "input_audio_buffer.append", "audio": data["media"]["payload"] }))
                             elif evt == "stop":
-                                # --- FIX #2: Use 'commit' as instructed by the error log ---
                                 await ai.send_str(json.dumps({"type": "input_audio_buffer.commit"}))
-                                # -----------------------------------------------------------
                     except WebSocketDisconnect:
                         print("Twilio WebSocket disconnected.", flush=True)
 
@@ -157,9 +155,7 @@ async def send_greeting(ai_ws, lang: str):
         "item": {
             "type": "message",
             "role": "assistant",
-            # --- FIX #3: Use 'text' as instructed by the error log ---
             "content": [{"type": "text", "text": greetings[lang]}]
-            # ---------------------------------------------------------
         }
     }))
     await ai_ws.send_str(json.dumps({"type": "response.create"}))
