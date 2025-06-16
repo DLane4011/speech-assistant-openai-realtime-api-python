@@ -4,7 +4,6 @@ import asyncio
 from urllib.parse import parse_qs
 import traceback
 
-# This import is new and replaces the 'websockets' library for the OpenAI connection
 import aiohttp
 
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -18,9 +17,9 @@ print("--- PYTHON SCRIPT STARTING ---", flush=True)
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
-# --- THIS IS THE FIX ---
-MODEL = "gpt-4o-2024-05-13"
-# ---------------------
+# --- THIS IS THE FINAL FIX ---
+MODEL = "gpt-4o-realtime"
+# ---------------------------
 
 if not OPENAI_API_KEY:
     print("!!! FATAL: OPENAI_API_KEY IS MISSING FROM ENVIRONMENT VARIABLES !!!", flush=True)
@@ -74,7 +73,6 @@ async def media(ws: WebSocket):
     print(f"WebSocket connection from Twilio accepted for language: {lang}", flush=True)
 
     try:
-        # We now use aiohttp to connect. This is the new, corrected way.
         print("Attempting to connect to OpenAI using aiohttp...", flush=True)
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(
@@ -91,7 +89,6 @@ async def media(ws: WebSocket):
 
                 stream_sid = None
 
-                # Coroutine to handle messages from Twilio to OpenAI
                 async def twilio_to_openai():
                     nonlocal stream_sid
                     try:
@@ -107,7 +104,6 @@ async def media(ws: WebSocket):
                     except WebSocketDisconnect:
                         print("Twilio WebSocket disconnected.", flush=True)
 
-                # Coroutine to handle messages from OpenAI to Twilio
                 async def openai_to_twilio():
                     try:
                         async for msg in ai:
@@ -121,11 +117,9 @@ async def media(ws: WebSocket):
                     except Exception as e:
                         print(f"!!! OpenAI connection closed unexpectedly: {e}", flush=True)
 
-                # Run both coroutines concurrently
                 await asyncio.gather(twilio_to_openai(), openai_to_twilio())
 
     except aiohttp.ClientResponseError as e:
-        # This will catch authentication errors (like 401 Unauthorized)
         print(f"!!! FAILED to connect to OpenAI. Status: {e.status}, Message: {e.message}", flush=True)
     except Exception as e:
         print(f"!!! CRITICAL UNHANDLED ERROR in WebSocket bridge: {e}", flush=True)
@@ -144,7 +138,6 @@ async def setup_session(ai_ws, lang: str):
         "when it occurred, where it took place, and if there is any evidence. "
         f"{language_instruction} Do not switch languages under any circumstances."
     )
-    # Use send_str for aiohttp
     await ai_ws.send_str(json.dumps({
         "type": "session.update",
         "session": {"turn_detection": {"type": "server_vad"}, "input_audio_format": "g711_ulaw", "output_audio_format": "g711_ulaw", "voice": "alloy", "instructions": prompt}
@@ -156,7 +149,6 @@ async def send_greeting(ai_ws, lang: str):
         "en": "Thank you for calling the anonymous tip line. To ensure your anonymity, this call is not being recorded by us. How can I help you today?",
         "es": "Gracias por llamar a la línea de denuncias anónimas. Para garantizar su anonimato, esta llamada no está siendo grabada por nosotros. ¿Cómo puedo ayudarle hoy?",
     }
-    # Use send_str for aiohttp
     await ai_ws.send_str(json.dumps({
         "type": "conversation.item.create",
         "item": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": greetings[lang]}]}
