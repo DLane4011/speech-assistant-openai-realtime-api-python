@@ -59,6 +59,8 @@ async def media(ws: WebSocket):
     print(f"WebSocket connection accepted for language: {lang}")
 
     try:
+        # --- This is the connection we are debugging ---
+        print("Attempting to connect to OpenAI...")
         async with websockets.connect(
             f"wss://api.openai.com/v1/realtime?model={MODEL}",
             extra_headers={
@@ -66,10 +68,15 @@ async def media(ws: WebSocket):
                 "OpenAI-Beta": "realtime=v1",
             },
         ) as ai:
-            print("Successfully connected to OpenAI real-time API.")
+            print(">>> SUCCESS: Connection to OpenAI established.")
             
+            print("Setting up OpenAI session...")
             await setup_session(ai, lang)
+            print(">>> SUCCESS: Session configured.")
+            
+            print("Sending greeting to OpenAI...")
             await send_greeting(ai, lang)
+            print(">>> SUCCESS: Greeting sent. Waiting for audio response...")
 
             stream_sid = None
 
@@ -83,17 +90,10 @@ async def media(ws: WebSocket):
                         if evt == "start":
                             stream_sid = data["start"]["streamSid"]
                             print(f"Twilio stream started: {stream_sid}")
-                        
                         elif evt == "media":
-                            await ai.send(json.dumps({
-                                "type": "input_audio_buffer.append",
-                                "audio": data["media"]["payload"],
-                            }))
-                        
+                            await ai.send(json.dumps({ "type": "input_audio_buffer.append", "audio": data["media"]["payload"] }))
                         elif evt == "stop":
-                            print("Twilio 'stop' event received. Indicating end of user turn to OpenAI.")
                             await ai.send(json.dumps({"type": "input_audio_buffer.end"}))
-
                 except WebSocketDisconnect:
                     print("Twilio WebSocket disconnected.")
                 except Exception as e:
@@ -103,26 +103,27 @@ async def media(ws: WebSocket):
                 try:
                     async for raw in ai:
                         msg = json.loads(raw)
-                        
+                        # This log is now very important.
+                        print(f"Received from OpenAI: {msg}")
                         if msg.get("type") == "response.audio.delta" and "delta" in msg:
-                            await ws.send_json({
-                                "event": "media",
-                                "streamSid": stream_sid,
-                                "media": {"payload": msg["delta"]},
-                            })
+                            await ws.send_json({ "event": "media", "streamSid": stream_sid, "media": {"payload": msg["delta"]} })
                 except websockets.exceptions.ConnectionClosed as e:
-                    print(f"OpenAI connection closed: {e}")
+                    # This will tell us WHY OpenAI closed the connection
+                    print(f"!!! OpenAI connection closed unexpectedly: Code={e.code}, Reason='{e.reason}'")
                 except Exception as e:
                     print(f"Error in openai_to_twilio: {e}")
 
             await asyncio.gather(twilio_to_openai(), openai_to_twilio())
 
+    except websockets.exceptions.InvalidStatusCode as e:
+        # This will catch authentication errors (like 401 Unauthorized)
+        print(f"!!! FAILED to connect to OpenAI. Status: {e.status_code}. Body: {await e.response.text()}")
     except Exception as e:
-        print(f"CRITICAL ERROR in WebSocket bridge: {e}")
+        print(f"!!! CRITICAL ERROR in WebSocket bridge: {e}")
     finally:
         if not ws.client_state == 'DISCONNECTED':
             await ws.close()
-        print("WebSocket connection closed.")
+        print("WebSocket connection flow finished.")
 
 async def setup_session(ai_ws, lang: str):
     language_instruction = "You MUST respond exclusively in Spanish." if lang == 'es' else "You MUST respond exclusively in English."
