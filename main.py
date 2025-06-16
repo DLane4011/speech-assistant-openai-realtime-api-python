@@ -17,8 +17,8 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 MODEL = "gpt-4o-realtime-preview-2024-10-01"
-# --- FIX FOR CHOPPY AUDIO: Trying a different voice model ---
-VOICE_ID = "nova" 
+# --- Reverting to the proven, stable voice model ---
+VOICE_ID = "alloy" 
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing from Railway Variables.")
@@ -78,6 +78,8 @@ async def media_stream(websocket: WebSocket, lang: str):
 
                 stream_sid = None
                 has_received_media = False
+                # --- FIX FOR CHOPPY AUDIO: A lightweight buffer ---
+                audio_buffer = ""
 
                 async def twilio_to_openai():
                     nonlocal stream_sid, has_received_media
@@ -99,16 +101,32 @@ async def media_stream(websocket: WebSocket, lang: str):
                         print("Twilio WebSocket disconnected.")
 
                 async def openai_to_twilio():
+                    nonlocal audio_buffer, stream_sid
                     try:
                         async for msg in ai_websocket:
                             if msg.type == aiohttp.WSMsgType.TEXT:
                                 data = json.loads(msg.data)
+                                # Check for audio chunks
                                 if data.get("type") == "response.audio.delta" and "delta" in data:
-                                    await websocket.send_json({"event": "media", "streamSid": stream_sid, "media": {"payload": data["delta"]}})
+                                    audio_buffer += data["delta"]
+                                    # Send audio in 80ms chunks to ensure smooth playback
+                                    if len(audio_buffer) >= 640:
+                                        chunk_to_send = audio_buffer[:640]
+                                        audio_buffer = audio_buffer[640:]
+                                        await websocket.send_json({"event": "media", "streamSid": stream_sid, "media": {"payload": chunk_to_send}})
+                                # Check for the end of a response
+                                elif "done" in data.get("type", ""):
+                                    if audio_buffer:
+                                        await websocket.send_json({"event": "media", "streamSid": stream_sid, "media": {"payload": audio_buffer}})
+                                        audio_buffer = "" # Clear the buffer
                             elif msg.type == aiohttp.WSMsgType.ERROR:
                                 print(f"OpenAI WebSocket error: {msg}")
                     except Exception:
                         print("OpenAI connection closed.")
+                        # Ensure any last bit of audio is sent if the connection closes
+                        if audio_buffer:
+                            await websocket.send_json({"event": "media", "streamSid": stream_sid, "media": {"payload": audio_buffer}})
+                            audio_buffer = ""
 
                 await asyncio.gather(twilio_to_openai(), openai_to_twilio())
 
