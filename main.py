@@ -3,9 +3,10 @@ import json
 import asyncio
 from urllib.parse import parse_qs
 import traceback
+import base64
+import audioop
 
 import aiohttp
-
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from twilio.twiml.voice_response import VoiceResponse, Connect
@@ -17,6 +18,13 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 MODEL = "gpt-4o-realtime-preview-2024-10-01"
+
+# Audio settings
+# Twilio uses 8000Hz an µ-law encoding. We will convert this to raw PCM for OpenAI.
+TWILIO_SAMPLE_RATE = 8000
+AUDIO_FORMAT = "pcm_s16le" # Signed 16-bit PCM, little-endian
+CHANNELS = 1
+BITS_PER_SAMPLE = 16
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing from Railway Variables.")
@@ -62,7 +70,7 @@ async def media_stream(websocket: WebSocket, lang: str):
     try:
         async with aiohttp.ClientSession() as session:
             async with session.ws_connect(
-                f"wss://api.openai.com/v1/realtime?model={MODEL}",
+                f"wss://api.openai.com/v1/realtime?model={MODEL}&encoding={AUDIO_FORMAT}&sample_rate={TWILIO_SAMPLE_RATE}",
                 headers={
                     "Authorization": f"Bearer {OPENAI_API_KEY}",
                     "OpenAI-Beta": "realtime=v1",
@@ -87,22 +95,38 @@ async def media_stream(websocket: WebSocket, lang: str):
                                 stream_sid = data["start"]["streamSid"]
                             elif event == "media":
                                 has_received_media = True
-                                await ai_websocket.send_str(json.dumps({"type": "input_audio_buffer.append", "audio": data["media"]["payload"]}))
+                                # Twilio sends µ-law audio base64 encoded.
+                                mulaw_data = base64.b64decode(data["media"]["payload"])
+                                # Convert µ-law to raw PCM (linear 16-bit).
+                                pcm_data = audioop.ulaw2lin(mulaw_data, 2)
+                                # Send raw PCM data to OpenAI
+                                await ai_websocket.send_bytes(pcm_data)
                             elif event == "stop":
                                 if has_received_media:
-                                    await asyncio.sleep(0.15)
-                                    await ai_websocket.send_str(json.dumps({"type": "input_audio_buffer.commit"}))
+                                    # This message is no longer needed with raw audio streaming
                                     has_received_media = False
                     except WebSocketDisconnect:
                         print("Twilio WebSocket disconnected.")
+                    finally:
+                        # Signal to OpenAI that the user audio stream is finished
+                        await ai_websocket.send_str(json.dumps({"type": "input_audio.stream.end"}))
+
 
                 async def openai_to_twilio():
                     try:
                         async for msg in ai_websocket:
-                            if msg.type == aiohttp.WSMsgType.TEXT:
-                                data = json.loads(msg.data)
-                                if data.get("type") == "response.audio.delta" and "delta" in data:
-                                    await websocket.send_json({"event": "media", "streamSid": stream_sid, "media": {"payload": data["delta"]}})
+                            if msg.type == aiohttp.WSMsgType.BINARY:
+                                # OpenAI sends back raw PCM audio.
+                                pcm_data = msg.data
+                                # Convert PCM to µ-law for Twilio.
+                                mulaw_data = audioop.lin2ulaw(pcm_data, 2)
+                                # Base64 encode the µ-law data.
+                                base64_mulaw = base64.b64encode(mulaw_data).decode('utf-8')
+                                # Send back to Twilio.
+                                await websocket.send_json({"event": "media", "streamSid": stream_sid, "media": {"payload": base64_mulaw}})
+                            elif msg.type == aiohttp.WSMsgType.TEXT:
+                                # This handles text messages like transcripts or errors
+                                print(f"Received text from OpenAI: {msg.data}")
                             elif msg.type == aiohttp.WSMsgType.ERROR:
                                 print(f"OpenAI WebSocket error: {msg}")
                     except Exception:
@@ -128,9 +152,10 @@ async def setup_session(ai_ws, lang: str):
         "when it occurred, where it took place, and if there is any evidence. "
         f"{language_instruction} Do not switch languages under any circumstances."
     )
+    # This API now uses a 'session.init' message
     await ai_ws.send_str(json.dumps({
-        "type": "session.update",
-        "session": {"turn_detection": {"type": "server_vad"}, "input_audio_format": "g711_ulaw", "output_audio_format": "g711_ulaw", "voice": "alloy", "instructions": prompt}
+        "type": "session.init",
+        "session": {"turn_detection": {"type": "server_vad"}, "voice": "alloy", "instructions": prompt, "output_format":{"encoding": "pcm_s16le", "sample_rate": 8000}}
     }))
 
 async def send_greeting(ai_ws, lang: str):
