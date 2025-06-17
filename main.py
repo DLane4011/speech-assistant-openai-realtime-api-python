@@ -17,8 +17,8 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 PUBLIC_URL = os.getenv("PUBLIC_URL")
 MODEL = "gpt-4o-realtime-preview-2024-10-01"
-# --- Using a different voice model, which can improve audio quality ---
-VOICE_ID = "nova" 
+# --- Reverting to the voice model that is proven to work ---
+VOICE_ID = "alloy" 
 
 if not OPENAI_API_KEY:
     raise RuntimeError("OPENAI_API_KEY is missing from Railway Variables.")
